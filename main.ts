@@ -65,6 +65,21 @@ function ret5Bps(): bigint | null {
   return floorDiv((c - p) * BPS, p);
 }
 
+/**
+ * What a buy may spend this reply: the cash on hand, capped by the harness's
+ * own weight room for the symbol (caps.max_weight_bps of equity, less any
+ * position already held), and only when it meets the minimum notional. With
+ * this competition's caps (max weight 100% of equity, minimum $1) that is the
+ * whole cash balance, but the caps are read from hello rather than assumed,
+ * so the same code stays inside the rules if a later competition tightens them.
+ */
+function buyAmount(state: BarsState): bigint | null {
+  const room = state.weightRoom(SYMBOL);
+  const spend = state.cash < room ? state.cash : room;
+  const minNotional = BigInt(state.hello.fees.min_notional_quote_units);
+  return spend >= minNotional ? spend : null;
+}
+
 await runBars({
   onBatch(state: BarsState, batch: Batch) {
     // A warm-up's orders are all rejected; send none (indicators still seed).
@@ -98,18 +113,19 @@ await runBars({
     const r5 = ret5Bps();
     if (hi === null || r5 === null) return [];
     const dip = floorDiv((hi - c) * BPS, hi);
-    if (state.cash <= 0n) return [];
+    const spend = buyAmount(state);
+    if (spend === null) return [];
 
     // Main entry: deep dip with the fall paused.
     if (dip >= DIP_BPS && r5 >= GATE_BPS) {
       entrySeq = state.seq;
-      return [{ side: 'buy', symbol: SYMBOL, notional_quote_units: state.cash, max_slippage_bps: MAX_SLIPPAGE_BPS }];
+      return [{ side: 'buy', symbol: SYMBOL, notional_quote_units: spend, max_slippage_bps: MAX_SLIPPAGE_BPS }];
     }
     // Fallback: only if this run has never traded, late in the window, on a
     // shallower dip that has already stabilised.
     if (!everTraded && state.seq >= FB_BAR && dip >= FB_DIP_BPS && r5 >= FB_GATE_BPS) {
       entrySeq = state.seq;
-      return [{ side: 'buy', symbol: SYMBOL, notional_quote_units: state.cash, max_slippage_bps: MAX_SLIPPAGE_BPS }];
+      return [{ side: 'buy', symbol: SYMBOL, notional_quote_units: spend, max_slippage_bps: MAX_SLIPPAGE_BPS }];
     }
     return [];
   },
